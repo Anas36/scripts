@@ -38,3 +38,5 @@ while IFS= read -r line; do
 done < "$input_filename"
 
 echo "Results saved in $output_filename."
+
+#run this script by ./check_connectivity_to_file.sh input.txt output.txt
