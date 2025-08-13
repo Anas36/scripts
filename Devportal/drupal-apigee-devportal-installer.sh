@@ -410,9 +410,9 @@ nginx_setup() {
   done
 
   # Fetch your known-good templates
-  sudo curl -fsSL https://raw.githubusercontent.com/ahmedalazazy/auto/main/nginxrhel \
+  sudo curl -fsSL https://github.com/Anas36/scripts/blob/main/Devportal/nginx.conf \
     -o /etc/nginx/nginx.conf
-  sudo curl -fsSL https://raw.githubusercontent.com/ahmedalazazy/auto/main/nginxconfigration \
+  sudo curl -fsSL https://raw.githubusercontent.com/Anas36/scripts/refs/heads/main/Devportal/drupal-devportal-nginx.conf \
     -o /etc/nginx/conf.d/drupal-nginx.conf
 
   local VHOST=/etc/nginx/conf.d/drupal-nginx.conf
