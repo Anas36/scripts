@@ -5,6 +5,8 @@ trap 'echo "❌ Error at line $LINENO"; exit 1' ERR
 
 # ── Tunables (env overrides allowed) ─────────────────────────────────────────
 OS_NAME="${OS_NAME:-Red Hat 9}"
+PHP_VERSION="${PHP_VERSION:-8.3}"       # set to 8.2 to install PHP 8.2
+PHP_STREAM="remi-${PHP_VERSION}"
 
 # Node role: web | db | all
 # ROLE="${ROLE:-all}"
@@ -75,14 +77,14 @@ os_setup() {
     net-tools tree firewalld gzip bind-utils patch
 }
 
-# ── PHP 8.2 ────────────────────────────────────────────────────────────────
+# ── PHP setup (Remi stream) ────────────────────────────────────────────────────────────────
 php_setup() {
-  say "PHP 8.2 setup"
+  say "PHP ${PHP_VERSION} setup"
   sudo dnf -y install epel-release \
     || sudo dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
   sudo dnf -y install https://rpms.remirepo.net/enterprise/remi-release-9.rpm
   sudo dnf -qy module reset php
-  sudo dnf -qy module enable php:remi-8.2
+  sudo dnf -qy module enable "php:${PHP_STREAM}"
   sudo dnf -y install \
     php php-bcmath php-cli php-common php-fpm \
     php-gd php-json php-mbstring php-mysqlnd php-opcache \
@@ -134,7 +136,7 @@ _mysql() {                       # run mariadb as root (uses ROOT_PASS if set)
 }
 _mysqladmin() {
   local RA=(-uroot); [[ -n "${ROOT_PASS:-}" ]] && RA=(-uroot "-p${ROOT_PASS}")
-  mariadb-admin "${RA[@]}" "$@"
+  sudo mariadb-admin "${RA[@]}" "$@"
 }
 
 db_install_repo_and_pkgs() {
@@ -195,15 +197,15 @@ SQL
 
 db_grant_local() {
   _mysql <<SQL
-CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost'   IDENTIFIED BY '${DB_PASS}';
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
-CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1'   IDENTIFIED BY '${DB_PASS}';
+CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'127.0.0.1';
 FLUSH PRIVILEGES;
 SQL
 }
 
-db_grant_webhost() {              # uses WEB_HOST
+db_grant_webhost() {
   _mysql <<SQL
 CREATE USER IF NOT EXISTS '${DB_USER}'@'${WEB_HOST}' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'${WEB_HOST}';
@@ -315,7 +317,7 @@ drupal_setup() {
     [ -d "$APP_DIR/web/sites/default" ] || { echo "ERROR: project scaffold missing at $APP_DIR/web/sites/default"; exit 1; }
   
     /usr/bin/php /usr/local/bin/composer --working-dir="$APP_DIR" \
-      require drush/drush:^12 -n
+      require --dev drush/drush:^12 -n
   
     [ -x "$APP_DIR/vendor/bin/drush" ] || { echo "ERROR: Drush not found at $APP_DIR/vendor/bin/drush"; exit 1; }
   
@@ -394,6 +396,15 @@ PHP
     ];
 PHP
 
+# hash_salt
+grep -q "^\$settings\['hash_salt'\]" "$SITES_DEFAULT/settings.php" || \
+  sudo bash -c "echo \"\$settings['hash_salt'] = '$(openssl rand -base64 48)';\" >> '$SITES_DEFAULT/settings.php'"
+
+  # Config sync directory
+  sudo install -d -m 2770 -o "$RUNUSER" -g "$WEBGROUP" "$APP_DIR/config/sync"
+  grep -q "^\$settings\['config_sync_directory'\]" "$SITES_DEFAULT/settings.php" || \
+  echo "\$settings['config_sync_directory'] = \$app_root . '/../config/sync';" | sudo tee -a "$SITES_DEFAULT/settings.php" >/dev/null
+
   say "Drupal codebase ready at $APP_DIR — proceed to the web installer."
 }
 
@@ -410,9 +421,9 @@ nginx_setup() {
   done
 
   # Fetch your known-good templates
-  sudo curl -fsSL https://github.com/Anas36/scripts/blob/main/Devportal/nginx.conf \
+  sudo curl -fsSL https://raw.githubusercontent.com/Anas36/scripts/main/Devportal/nginx.conf \
     -o /etc/nginx/nginx.conf
-  sudo curl -fsSL https://raw.githubusercontent.com/Anas36/scripts/refs/heads/main/Devportal/drupal-devportal-nginx.conf \
+  sudo curl -fsSL https://raw.githubusercontent.com/Anas36/scripts/main/Devportal/drupal-devportal-nginx.conf \
     -o /etc/nginx/conf.d/drupal-nginx.conf
 
   local VHOST=/etc/nginx/conf.d/drupal-nginx.conf
@@ -443,8 +454,6 @@ nginx_setup() {
     sudo sed -i -E "s|^\s*root\s+[^;]+;|    root ${DOCROOT};|g" /etc/nginx/conf.d/drupal-nginx.conf
   fi
 
-  # (Optional) update any literal path uses elsewhere too
-  sudo sed -i -E "s|^\s*root\s+[^;]+;|    root ${DOCROOT};|g" /etc/nginx/conf.d/drupal-nginx.conf
   # sudo sed -i "s|/var/www/devportal/web|$DOCROOT|g" /etc/nginx/nginx.conf /etc/nginx/conf.d/drupal-nginx.conf 2>/dev/null || true
 
   # # index directive (adds if missing right after root)
@@ -547,10 +556,11 @@ drupal_post_installation() {
     echo "Drupal not installed yet; skipping post-installation."
     return 0
   fi
-  remove_deprecated_modules
-  secure_drupal_files
+  # remove_deprecated_modules
+  # secure_drupal_files
 #   apigee_key_setup
   # Finalize
+  sudo -u "$RUNUSER" "$DRUSH" -r "$DOCROOT" cex -y
   sudo -u "$RUNUSER" "$DRUSH" --root="$DOCROOT" cr -y
   sudo -u "$RUNUSER" "$DRUSH" --root="$DOCROOT" status
 }
@@ -656,7 +666,7 @@ main() {
     *)
       echo "Invalid ROLE=$ROLE (use web|db|all)"; exit 2 ;;
   esac
-
+  drupal_post_installation
   # [[ "${BASH_SOURCE[0]}" != "$0" ]] && cleanup
 }
 
