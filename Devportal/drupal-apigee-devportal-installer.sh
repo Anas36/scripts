@@ -74,7 +74,8 @@ os_setup() {
   sudo dnf -y install \
     dnf-plugins-core git zip unzip wget \
     htop vim nano curl bash-completion \
-    net-tools tree firewalld gzip bind-utils patch
+    net-tools tree firewalld gzip bind-utils patch \
+    acl policycoreutils-python-utils
 }
 
 # ── PHP setup (Remi stream) ────────────────────────────────────────────────────────────────
@@ -119,9 +120,15 @@ INI
 session.cookie_samesite=Lax
 session.cookie_secure=0
 INI
+  sudo install -d /etc/systemd/system/php-fpm.service.d
+  sudo tee /etc/systemd/system/php-fpm.service.d/override.conf >/dev/null <<'INI'
+[Service]
+UMask=0002
+INI
   if [ "${DRUPAL_HTTPS:-0}" = "1" ]; then
     sudo sed -i 's/^session\.cookie_secure=.*/session.cookie_secure=1/' /etc/php.d/99-drupal.ini
   fi
+  sudo systemctl daemon-reload
   sudo systemctl enable --now php-fpm
   sudo systemctl restart php-fpm
   say "🎉  php stack ready (php $(php -v | head -n1))." 
@@ -252,6 +259,8 @@ db_setup() {
 drupal_setup() {
   say "Drupal (Apigee DevPortal Kickstart) codebase"
   id "$RUNUSER" >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -U "$RUNUSER"
+
+  sudo usermod -aG "$WEBGROUP" "$RUNUSER"
   
   RUNHOME="$(getent passwd "$RUNUSER" | cut -d: -f6)"
   : "${RUNHOME:=/home/$RUNUSER}"
@@ -361,8 +370,11 @@ PHP
   fi
   sudo install -d -o "$RUNUSER" -g "$WEBGROUP" -m 2770 "$PRIVATE_DIR"
   sudo chown -R "$RUNUSER":"$WEBGROUP" "$SITES_DEFAULT" "$PRIVATE_DIR"
+  sudo chmod 2770 "$SITES_DEFAULT/files" "$PRIVATE_DIR"
   sudo find "$PRIVATE_DIR" -type d -exec chmod 2770 {} +
   sudo find "$PRIVATE_DIR" -type f -exec chmod 0660 {} +
+  sudo setfacl -R  -m u:$RUNUSER:rwx,g:$WEBGROUP:rwx "$SITES_DEFAULT/files" "$PRIVATE_DIR"
+  sudo setfacl -dR -m u:$RUNUSER:rwx,g:$WEBGROUP:rwx "$SITES_DEFAULT/files" "$PRIVATE_DIR"
   echo "\$settings['file_private_path'] = '${PRIVATE_DIR}';" | sudo tee -a "$SITES_DEFAULT/settings.php" >/dev/null
 
   # # 1) If the commented sample line exists, replace it with a real setting
@@ -382,6 +394,10 @@ PHP
   sudo chcon -R -t httpd_sys_rw_content_t "$PRIVATE_DIR" || true
   sudo setsebool -P httpd_can_network_connect on || true
   sudo setsebool -P httpd_can_network_connect_db on || true
+  sudo semanage fcontext -a -t httpd_sys_rw_content_t  "$SITES_DEFAULT(/.*)?"
+  sudo semanage fcontext -a -t httpd_sys_rw_content_t  "$SITES_DEFAULT/files(/.*)?"
+  sudo semanage fcontext -a -t httpd_sys_rw_content_t  "$PRIVATE_DIR(/.*)?"
+  sudo restorecon -R "$SITES_DEFAULT" "$SITES_DEFAULT/files" "$PRIVATE_DIR" || true
 
   sudo tee -a "$SITES_DEFAULT/settings.php" >/dev/null <<PHP
     \$databases['default']['default'] = [
@@ -397,8 +413,11 @@ PHP
 PHP
 
 # hash_salt
-grep -q "^\$settings\['hash_salt'\]" "$SITES_DEFAULT/settings.php" || \
-  sudo bash -c "echo \"\$settings['hash_salt'] = '$(openssl rand -base64 48)';\" >> '$SITES_DEFAULT/settings.php'"
+# Ensure hash_salt exists (idempotent)
+  if ! grep -Eq "^[[:space:]]*\$settings\['hash_salt'\][[:space:]]*=" "$SITES_DEFAULT/settings.php"; then
+    SALT=$(openssl rand -base64 48 | tr -d '\n')
+    printf "\$settings['hash_salt'] = '%s';\n" "$SALT" | sudo tee -a "$SITES_DEFAULT/settings.php" >/dev/null
+  fi
 
   # Config sync directory
   sudo install -d -m 2770 -o "$RUNUSER" -g "$WEBGROUP" "$APP_DIR/config/sync"
