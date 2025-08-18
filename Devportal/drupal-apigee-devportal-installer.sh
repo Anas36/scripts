@@ -75,7 +75,7 @@ os_setup() {
     dnf-plugins-core git zip unzip wget \
     htop vim nano curl bash-completion \
     net-tools tree firewalld gzip bind-utils patch \
-    acl policycoreutils-python-utils
+    acl policycoreutils-python-utils rsync
 }
 
 # ── PHP setup (Remi stream) ────────────────────────────────────────────────────────────────
@@ -426,6 +426,7 @@ PHP
 
   say "Drupal codebase ready at $APP_DIR — proceed to the web installer."
 }
+
 
 # ── Nginx ──────────────────────────────────────────────────────────────────
 nginx_setup() {
